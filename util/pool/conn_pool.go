@@ -1,4 +1,5 @@
-// Copyright 2018 silenceper
+// Copyright 2018 silenceper Authors
+// Copyright 2018 Chubao Authors
 // from https://github.com/silenceper/pool.git,thanks
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
@@ -17,82 +18,118 @@ package pool
 
 import (
 	"net"
+	"strings"
 	"sync"
 	"time"
 )
 
-type ConnTestFunc func(conn *net.TCPConn) bool
-
-type ConnPool struct {
-	sync.Mutex
-	pools    map[string]Pool
-	initCap  int
-	maxCap   int
-	idleTime time.Duration
-	testFunc ConnTestFunc
+type ConnectObject struct {
+	conn *net.TCPConn
 }
 
-func NewConnPool() (connP *ConnPool) {
-	connP = &ConnPool{pools: make(map[string]Pool), initCap: 5, maxCap: 30, idleTime: time.Second * 20}
-	go connP.autoRelease()
-
-	return connP
+type Pool struct {
+	pool   chan *ConnectObject
+	mincap int
+	maxcap int
+	target string
 }
 
-func (connP *ConnPool) Get(targetAddr string) (c *net.TCPConn, err error) {
-	var obj interface{}
+func NewPool(min, max int, target string) (p *Pool) {
+	p = new(Pool)
+	p.mincap = min
+	p.maxcap = max
+	p.target = target
+	p.pool = make(chan *ConnectObject, max)
+	p.initAllConnect()
+	return p
+}
 
-	factoryFunc := func(addr interface{}) (interface{}, error) {
-		var connect *net.TCPConn
-		conn, err := net.DialTimeout("tcp", addr.(string), time.Second)
+func (p *Pool) initAllConnect() {
+	for i := 0; i < p.mincap; i++ {
+		c, err := net.Dial("tcp", p.target)
 		if err == nil {
-			connect, _ = conn.(*net.TCPConn)
-			connect.SetKeepAlive(true)
-			connect.SetNoDelay(true)
+			conn := c.(*net.TCPConn)
+			conn.SetKeepAlive(true)
+			conn.SetNoDelay(true)
+			obj := &ConnectObject{conn: conn}
+			p.putconnect(obj)
 		}
-
-		return connect, err
 	}
-	closeFunc := func(v interface{}) error { return v.(net.Conn).Close() }
+}
 
-	testFunc := func(item interface{}) bool {
-		if connP != nil {
-			return connP.testFunc(item.(*net.TCPConn))
+func (p *Pool) putconnect(c *ConnectObject) {
+	select {
+	case p.pool <- c:
+		return
+	default:
+		return
+	}
+}
+
+func (p *Pool) getconnect() (c *ConnectObject) {
+	select {
+	case c = <-p.pool:
+		return
+	default:
+		return
+	}
+}
+
+func (p *Pool) AutoRelease() {
+	for {
+		select {
+		case c := <-p.pool:
+			c.conn.Close()
+		default:
+			return
 		}
-		return true
 	}
+}
 
-	connP.Lock()
-	pool, ok := connP.pools[targetAddr]
-	if !ok {
-		poolConfig := &PoolConfig{
-			InitialCap:  connP.initCap,
-			MaxCap:      connP.maxCap,
-			Factory:     factoryFunc,
-			Close:       closeFunc,
-			Test:        testFunc,
-			IdleTimeout: connP.idleTime,
-			Para:        targetAddr,
-		}
-		pool, err = NewChannelPool(poolConfig)
-		if err != nil {
-			connP.Unlock()
-			conn, err := factoryFunc(targetAddr)
-			return conn.(*net.TCPConn), err
-		}
-		connP.pools[targetAddr] = pool
+func (p *Pool) Get() (c *net.TCPConn, err error) {
+	obj := p.getconnect()
+	if obj != nil {
+		return obj.conn, nil
 	}
-	connP.Unlock()
-
-	if obj, err = pool.Get(); err != nil {
-		conn, err := factoryFunc(targetAddr)
-		return conn.(*net.TCPConn), err
+	var connect net.Conn
+	connect, err = net.Dial("tcp", p.target)
+	if err == nil {
+		conn := connect.(*net.TCPConn)
+		conn.SetKeepAlive(true)
+		conn.SetNoDelay(true)
+		c = conn
 	}
-	c = obj.(*net.TCPConn)
 	return
 }
 
-func (connP *ConnPool) Put(c *net.TCPConn, forceClose bool) {
+type ConnectPool struct {
+	sync.Mutex
+	pools   map[string]*Pool
+	mincap  int
+	maxcap  int
+	timeout int64
+}
+
+func NewConnPool() (connectPool *ConnectPool) {
+	connectPool = &ConnectPool{pools: make(map[string]*Pool), mincap: 5, maxcap: 50, timeout: int64(time.Second * 20)}
+	go connectPool.autoRelease()
+
+	return connectPool
+}
+
+func (connectPool *ConnectPool) Get(targetAddr string) (c *net.TCPConn, err error) {
+	connectPool.Lock()
+	pool, ok := connectPool.pools[targetAddr]
+	if !ok {
+		pool = NewPool(connectPool.mincap, connectPool.maxcap, targetAddr)
+		connectPool.pools[targetAddr] = pool
+	}
+	connectPool.Unlock()
+
+	return pool.Get()
+}
+
+func (connectPool *ConnectPool) Put(c *net.TCPConn, forceClose bool) {
 	if c == nil {
 		return
 	}
@@ -101,33 +138,59 @@ func (connP *ConnPool) Put(c *net.TCPConn, forceClose bool) {
 		return
 	}
 	addr := c.RemoteAddr().String()
-	connP.Lock()
-	pool, ok := connP.pools[addr]
-	connP.Unlock()
+	connectPool.Lock()
+	pool, ok := connectPool.pools[addr]
+	connectPool.Unlock()
 	if !ok {
 		c.Close()
 		return
 	}
-	pool.Put(c)
+	object := &ConnectObject{conn: c}
+	pool.putconnect(object)
 
 	return
 }
 
-func (connP *ConnPool) ReleaseAllConnect(target string) {
-	connP.Lock()
-	pool := connP.pools[target]
-	connP.Unlock()
+func (connectPool *ConnectPool) CheckErrorForPutConnect(c *net.TCPConn, target string, err error) {
+	if c == nil {
+		return
+	}
+	if strings.Contains(err.Error(), "use of closed network connection") {
+		c.Close()
+		connectPool.ReleaseAllConnect(target)
+		return
+	}
+	if err != nil {
+		c.Close()
+		return
+	}
+	addr := c.RemoteAddr().String()
+	connectPool.Lock()
+	pool, ok := connectPool.pools[addr]
+	connectPool.Unlock()
+	if !ok {
+		c.Close()
+		return
+	}
+	object := &ConnectObject{conn: c}
+	pool.putconnect(object)
+}
+
+func (connectPool *ConnectPool) ReleaseAllConnect(target string) {
+	connectPool.Lock()
+	pool := connectPool.pools[target]
+	connectPool.Unlock()
 	pool.AutoRelease()
 }
 
-func (connP *ConnPool) autoRelease() {
+func (connectPool *ConnectPool) autoRelease() {
 	for {
-		pools := make([]Pool, 0)
-		connP.Lock()
-		for _, pool := range connP.pools {
+		pools := make([]*Pool, 0)
+		connectPool.Lock()
+		for _, pool := range connectPool.pools {
 			pools = append(pools, pool)
 		}
-		connP.Unlock()
+		connectPool.Unlock()
 		for _, pool := range pools {
 			pool.AutoRelease()
 		}
