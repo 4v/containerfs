@@ -1,4 +1,4 @@
-// Copyright 2018 The NebulousLabs Authors
+//Copyright (c) 2016 Nebulous Inc.
 //
 // The MIT License (MIT)
 // Permission is hereby granted, free of charge, to any person obtaining a copy

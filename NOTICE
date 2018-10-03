@@ -1,5 +1,5 @@
 Copyright 2018 Containerfs Authors
 This project is licensed under the Apache version 2 license
 with exception of util/try_mutexlock.go and util/pool/conn_pool.go  which are licensed under MIT license.
-The util/try_mutexlock.go from from https://github.com/NebulousLabs/Sia.git,
-The util/pool/conn_pool.go from https://github.com/silenceper/pool.git,thanks
+The util/try_mutexlock.go come from from https://github.com/NebulousLabs/Sia.git,
+The util/pool/conn_pool.go come from https://github.com/silenceper/pool.git,thanks
