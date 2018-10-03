@@ -1,4 +1,3 @@
-// Copyright 2018 The Containerfs Authors.
 // Copyright 2018 The Sia Authors
 //from https://github.com/NebulousLabs/Sia.git,thanks
 //
