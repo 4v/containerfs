@@ -33,7 +33,7 @@
 // This design choice prevents any call to Request from blocking forever,
 // striking a balance between precise resource management and flexibility.
 
-package util
+package trymutex
 
 import (
 	"sync"
