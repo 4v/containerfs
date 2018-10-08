@@ -22,7 +22,7 @@ import (
 	"sync"
 	"sync/atomic"
 
-	"github.com/tiglabs/containerfs/util"
+	"github.com/tiglabs/containerfs/util/trymutex"
 )
 
 type Chunk struct {
@@ -31,7 +31,7 @@ type Chunk struct {
 	lastOid     uint64
 	syncLastOid uint64
 	commitLock  sync.RWMutex
-	compactLock util.TryMutexLock
+	compactLock trymutex.TryMutexLock
 }
 
 func NewChunk(dataDir string, chunkId int) (c *Chunk, err error) {
