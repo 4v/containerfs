@@ -22,8 +22,8 @@ import (
 	"sync"
 	"sync/atomic"
 
-	"github.com/tiglabs/containerfs/util"
 	"github.com/tiglabs/containerfs/util/log"
+	"github.com/tiglabs/containerfs/util/try_mutex"
 )
 
 type BlobFile struct {
@@ -32,7 +32,7 @@ type BlobFile struct {
 	lastOid     uint64
 	syncLastOid uint64
 	commitLock  sync.RWMutex
-	compactLock util.TryMutexLock
+	compactLock trymutex.TryMutexLock
 }
 
 func NewBlobFile(dataDir string, blobfileId int) (c *BlobFile, err error) {
