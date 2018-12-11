@@ -15,7 +15,6 @@
 package log
 
 import (
-	"bytes"
 	"errors"
 	"fmt"
 	"io"
@@ -24,12 +23,12 @@ import (
 	"path"
 	"runtime"
 	"strconv"
-	"sync"
 	"time"
 )
 
 type Level uint8
 
+// Level definition
 const (
 	DebugLevel  Level = 1
 	InfoLevel         = DebugLevel<<1 + 1
@@ -59,81 +58,6 @@ var levelPrefixes = []string{
 
 type flusher interface {
 	Flush()
-}
-
-type asyncWriter struct {
-	file      *os.File
-	buffer    *bytes.Buffer
-	mu        sync.Mutex
-	closeC    chan struct{}
-	closeOnce sync.Once
-}
-
-func (writer *asyncWriter) flushScheduler() {
-	var (
-		ticker *time.Ticker
-	)
-	ticker = time.NewTicker(1 * time.Second)
-	for {
-		select {
-		case <-ticker.C:
-			writer.flushToFile()
-		case <-writer.closeC:
-			ticker.Stop()
-			return
-		}
-	}
-}
-
-func (writer *asyncWriter) Write(p []byte) (n int, err error) {
-	writer.mu.Lock()
-	writer.buffer.Write(p)
-	writer.mu.Unlock()
-	if writer.buffer.Len() > WriterBufferLenLimit {
-		writer.flushToFile()
-	}
-	return
-}
-
-func (writer *asyncWriter) Close() (err error) {
-	writer.mu.Lock()
-	defer writer.mu.Unlock()
-	writer.closeOnce.Do(func() {
-		close(writer.closeC)
-		writer.flushToFile()
-		writer.file.Sync()
-		writer.file.Close()
-	})
-	return
-}
-
-func (writer *asyncWriter) Flush() {
-	writer.flushToFile()
-}
-
-func (writer *asyncWriter) flushToFile() {
-	writer.mu.Lock()
-	flushLength := writer.buffer.Len()
-	if flushLength == 0 {
-		writer.mu.Unlock()
-		return
-	}
-	flushBytes := make([]byte, flushLength)
-	copy(flushBytes, writer.buffer.Bytes())
-	writer.buffer.Reset()
-	writer.mu.Unlock()
-	writer.file.Write(flushBytes[:flushLength])
-	writer.file.Sync()
-}
-
-func newAsyncWriter(out *os.File) *asyncWriter {
-	w := &asyncWriter{
-		file:   out,
-		buffer: bytes.NewBuffer(make([]byte, 0, WriterBufferInitSize)),
-		closeC: make(chan struct{}),
-	}
-	go w.flushScheduler()
-	return w
 }
 
 type closableLogger struct {
@@ -222,7 +146,7 @@ func (l *Log) initLog(logDir, module string, level Level) error {
 		if fp, err = os.OpenFile(path.Join(logDir, module+logFileName), FileOpt, 0666); err != nil {
 			return
 		}
-		newLogger = newCloseableLogger(newAsyncWriter(fp), "", logOpt)
+		newLogger = newCloseableLogger(NewAsyncFileWriter(fp), "", logOpt)
 		return
 	}
 	var err error
@@ -466,7 +390,7 @@ func (l *Log) checkLogRotation(logDir, module string) {
 			if fp, err = os.OpenFile(logFilePath, FileOpt, 0666); err != nil {
 				return
 			}
-			setLog.SetOutput(newAsyncWriter(fp))
+			setLog.SetOutput(NewAsyncFileWriter(fp))
 			return
 		}
 
