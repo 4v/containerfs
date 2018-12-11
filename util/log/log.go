@@ -62,12 +62,11 @@ type flusher interface {
 }
 
 type asyncWriter struct {
-	file     *os.File
-	buffer   *bytes.Buffer
-	flushTmp []byte
-	flushC   chan bool
-	closed   bool
-	mu       sync.Mutex
+	file      *os.File
+	buffer    *bytes.Buffer
+	mu        sync.Mutex
+	closeC    chan struct{}
+	closeOnce sync.Once
 }
 
 func (writer *asyncWriter) flushScheduler() {
@@ -79,12 +78,9 @@ func (writer *asyncWriter) flushScheduler() {
 		select {
 		case <-ticker.C:
 			writer.flushToFile()
-		case _, open := <-writer.flushC:
-			if !open {
-				ticker.Stop()
-				return
-			}
-			writer.flushToFile()
+		case <-writer.closeC:
+			ticker.Stop()
+			return
 		}
 	}
 }
@@ -94,10 +90,7 @@ func (writer *asyncWriter) Write(p []byte) (n int, err error) {
 	writer.buffer.Write(p)
 	writer.mu.Unlock()
 	if writer.buffer.Len() > WriterBufferLenLimit {
-		select {
-		case writer.flushC <- true:
-		default:
-		}
+		writer.flushToFile()
 	}
 	return
 }
@@ -105,12 +98,12 @@ func (writer *asyncWriter) Write(p []byte) (n int, err error) {
 func (writer *asyncWriter) Close() (err error) {
 	writer.mu.Lock()
 	defer writer.mu.Unlock()
-	if writer.closed {
-		return
-	}
-	close(writer.flushC)
-	writer.file.Close()
-	writer.closed = true
+	writer.closeOnce.Do(func() {
+		close(writer.closeC)
+		writer.flushToFile()
+		writer.file.Sync()
+		writer.file.Close()
+	})
 	return
 }
 
@@ -121,20 +114,23 @@ func (writer *asyncWriter) Flush() {
 func (writer *asyncWriter) flushToFile() {
 	writer.mu.Lock()
 	flushLength := writer.buffer.Len()
-	if writer.flushTmp == nil || cap(writer.flushTmp) < flushLength {
-		writer.flushTmp = make([]byte, flushLength)
+	if flushLength == 0 {
+		writer.mu.Unlock()
+		return
 	}
-	copy(writer.flushTmp, writer.buffer.Bytes())
+	flushBytes := make([]byte, flushLength)
+	copy(flushBytes, writer.buffer.Bytes())
 	writer.buffer.Reset()
 	writer.mu.Unlock()
-	writer.file.Write(writer.flushTmp[:flushLength])
+	writer.file.Write(flushBytes[:flushLength])
+	writer.file.Sync()
 }
 
 func newAsyncWriter(out *os.File) *asyncWriter {
 	w := &asyncWriter{
 		file:   out,
 		buffer: bytes.NewBuffer(make([]byte, 0, WriterBufferInitSize)),
-		flushC: make(chan bool, 1000),
+		closeC: make(chan struct{}),
 	}
 	go w.flushScheduler()
 	return w

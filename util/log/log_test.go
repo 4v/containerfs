@@ -30,6 +30,6 @@ func TestLog(t *testing.T) {
 	InitLog("/tmp/bdfs", "bdfs", DebugLevel)
 	for {
 		LogDebugf("action[TestLog] current time %v.", time.Now())
-		time.Sleep(200 * time.Millisecond)
+		time.Sleep(20 * time.Millisecond)
 	}
 }
